@@ -106,20 +106,15 @@ en el contexto recuperado de los manuales.
 INSTRUCCIONES OBLIGATORIAS:
 
 1. Responde siempre en español.
-2. Analiza primero todos los fragmentos del contexto.
-3. Si al menos uno de los fragmentos contiene la respuesta, responde de forma
-   clara utilizando esa información.
+2. Analiza todos los fragmentos del contexto antes de responder.
+3. Si al menos un fragmento contiene la respuesta, utiliza esa información.
 4. Cuando la pregunta solicite un procedimiento, presenta los pasos en orden.
 5. No sustituyas el procedimiento solicitado por otro parecido.
-   Por ejemplo, iniciar sesión y crear un usuario son operaciones diferentes.
-6. No inventes funciones, campos, botones, requisitos ni resultados.
-7. Si el contexto no contiene absolutamente ninguna información útil para
-   responder, contesta únicamente:
+6. No inventes funciones, botones, campos, requisitos ni resultados.
+7. Si el contexto no contiene información útil, responde únicamente:
    "No encontré esa información en la documentación disponible."
 8. Nunca combines el mensaje anterior con una respuesta parcial.
-9. Al final agrega una sección llamada "Fuentes consultadas".
-10. Incluye solamente las fuentes realmente utilizadas para redactar la
-    respuesta y evita repetirlas.
+9. No escribas ni inventes una sección de fuentes.
 
 CONTEXTO RECUPERADO:
 
@@ -139,6 +134,45 @@ def generate_answer(model, prompt):
     response = model.invoke(prompt)
 
     return response.content.strip()
+
+def format_sources(documents):
+    """Genera una lista de fuentes reales sin duplicados."""
+
+    sources = []
+    seen = set()
+
+    for document in documents:
+        file_name = document.metadata.get(
+            "file_name",
+            "Documento desconocido",
+        )
+
+        page = document.metadata.get("page")
+
+        if isinstance(page, int):
+            page += 1
+
+        source_key = (file_name, page)
+
+        if source_key in seen:
+            continue
+
+        seen.add(source_key)
+
+        page_text = (
+            str(page)
+            if page is not None
+            else "no disponible"
+        )
+
+        sources.append(
+            f"- {file_name}, página {page_text}"
+        )
+
+    if not sources:
+        return ""
+
+    return "\n\nFuentes consultadas:\n" + "\n".join(sources)
 
 
 def show_retrieved_sources(documents):
@@ -174,16 +208,25 @@ def answer_question(vector_store, model, question):
     if not documents:
         return (
             "No encontré información relacionada con la pregunta "
-            "en la documentación disponible."
+            "en la documentación disponible. Por favor pongase en contacto con nosostrso via correo electronico"
         )
 
     context = build_context(documents)
     prompt = build_prompt(question, context)
+
     answer = generate_answer(model, prompt)
+    sources = format_sources(documents)
 
     show_retrieved_sources(documents)
 
-    return answer
+    no_information_message = (
+        "No encontré esa información en la documentación disponible, por favor pongase en contacto con nosostrso via correo electronico."
+    )
+
+    if answer.strip() == no_information_message:
+        return no_information_message
+
+    return answer + sources
 
 
 def main():
