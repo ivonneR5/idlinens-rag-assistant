@@ -18,9 +18,14 @@ EMBEDDING_MODEL = (
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-OLLAMA_MODEL = "gemma3:4b"
+# Modelo ligero para una respuesta más rápida en OCI.
+OLLAMA_MODEL = "gemma3:1b"
 
-MAX_RETRIEVED_DOCUMENTS = 5
+# Optimización del RAG.
+MAX_RETRIEVED_DOCUMENTS = 4
+RETRIEVAL_CANDIDATES = 8
+MAX_CHARS_PER_DOCUMENT = 1200
+
 MAX_SOURCES_TO_DISPLAY = 3
 SHOW_RETRIEVED_SOURCES_IN_TERMINAL = True
 
@@ -131,11 +136,18 @@ def load_vector_store(embeddings):
 
 
 def load_language_model():
-    """Inicializa Gemma 3 mediante Ollama."""
+    """
+    Inicializa Gemma 3 mediante Ollama.
+
+    keep_alive conserva el modelo cargado para evitar
+    recargarlo completamente en cada consulta.
+    """
 
     return ChatOllama(
         model=OLLAMA_MODEL,
         temperature=0,
+        num_predict=220,
+        keep_alive="30m",
     )
 
 
@@ -309,20 +321,17 @@ def retrieve_documents(vector_store, question):
         results_with_scores = (
             vector_store.similarity_search_with_score(
                 query=search_query,
-                k=12,
+                k=RETRIEVAL_CANDIDATES,
             )
         )
 
         for document, score in results_with_scores:
             key = _document_key(document)
-
             numeric_score = float(score)
 
-            # Se conserva la mejor distancia encontrada.
             if (
                 key not in combined_results
-                or numeric_score
-                < combined_results[key][1]
+                or numeric_score < combined_results[key][1]
             ):
                 document.metadata[
                     "retrieval_score"
@@ -372,7 +381,12 @@ def get_page_number(document):
 
 
 def build_context(documents):
-    """Construye el contexto enviado a Gemma."""
+    """
+    Construye el contexto enviado a Gemma.
+
+    Limita cada fragmento para reducir el tiempo de evaluación
+    del prompt sin modificar el índice FAISS ni los documentos.
+    """
 
     context_parts = []
 
@@ -398,7 +412,9 @@ def build_context(documents):
             f"{file_name}, página {page_text}]"
         )
 
-        content = document.page_content.strip()
+        content = document.page_content.strip()[
+            :MAX_CHARS_PER_DOCUMENT
+        ]
 
         context_parts.append(
             f"{source_header}\n{content}"
@@ -417,44 +433,44 @@ def build_prompt(question, context):
     return f"""
 Eres un asistente especializado en el sistema IDLinens HA.
 
-Debes responder preguntas sobre la aplicación Android, el Dashboard
+Responde preguntas sobre la aplicación Android, el Dashboard
 y los procesos operativos utilizando exclusivamente el contexto
 recuperado de los manuales oficiales.
 
 INSTRUCCIONES OBLIGATORIAS:
 
 1. Responde siempre en español.
-2. Lee todos los fragmentos antes de responder.
+2. Analiza todos los fragmentos recuperados.
 3. Reconoce sinónimos y expresiones equivalentes.
-4. No es necesario que la pregunta use exactamente las palabras
+4. La pregunta no necesita utilizar exactamente las palabras
    empleadas en los manuales.
-5. Ejemplos de equivalencias:
+5. Ejemplos:
    - "crear un usuario" equivale a "registrar un nuevo usuario";
    - "buscar una prenda" equivale a "localizar una prenda";
    - "dar de alta una prenda" equivale a
      "registrar una nueva prenda".
-6. Cuando la pregunta solicite un procedimiento, identifica dentro
-   del contexto los pasos, acciones o instrucciones relacionadas.
-7. Presenta los procedimientos mediante una lista numerada.
-8. Responde exactamente la operación solicitada.
+6. Cuando se solicite un procedimiento, identifica los pasos,
+   acciones o instrucciones relacionados.
+7. Presenta los procedimientos con una lista numerada.
+8. Responde únicamente la operación solicitada.
 9. No confundas:
    - iniciar sesión con crear un usuario;
    - registrar una prenda con ponerla en circulación;
    - buscar una prenda con editar un activo.
-10. No inventes botones, campos, funciones, precios, requisitos
-    ni resultados.
+10. No inventes botones, campos, funciones, precios,
+    requisitos ni resultados.
 11. No utilices conocimientos externos.
-12. No agregues fuentes; el sistema las añadirá automáticamente.
-13. Solo cuando ninguno de los fragmentos contenga información
-    útil, responde exactamente:
+12. No agregues fuentes. El sistema las añadirá.
+13. Si ninguno de los fragmentos contiene información útil,
+    responde exactamente:
 
 "{NO_INFORMATION_BASE}"
 
-CONTEXTO RECUPERADO:
+CONTEXTO:
 
 {context}
 
-PREGUNTA DEL USUARIO:
+PREGUNTA:
 
 {question}
 
@@ -466,17 +482,10 @@ def build_retry_prompt(question, context):
     """Construye un segundo prompt más directo."""
 
     return f"""
-Analiza nuevamente los fragmentos recuperados.
+Responde la pregunta usando exclusivamente el contexto.
 
-La pregunta puede usar palabras diferentes a las del manual.
-Debes reconocer sinónimos y operaciones equivalentes.
-
-Busca especialmente títulos, pasos, procedimientos, listas
-numeradas, requisitos y acciones relacionadas con la pregunta.
-
-Si algún fragmento contiene información aplicable, responde
-utilizándola. No indiques que la información no existe cuando
-el contexto contiene un procedimiento relacionado.
+Reconoce sinónimos y expresiones equivalentes.
+Busca pasos, procedimientos y acciones relacionados.
 
 No inventes información.
 Responde siempre en español.
@@ -554,10 +563,7 @@ def format_sources(documents):
             f"- {file_name}, página {page_text}"
         )
 
-        if (
-            len(sources)
-            >= MAX_SOURCES_TO_DISPLAY
-        ):
+        if len(sources) >= MAX_SOURCES_TO_DISPLAY:
             break
 
     if not sources:
@@ -658,8 +664,8 @@ def answer_question(
         prompt=prompt,
     )
 
-    # Segundo intento cuando Gemma rechaza el contexto
-    # aun existiendo fragmentos relacionados.
+    # Solo realiza un segundo intento cuando el modelo afirma
+    # que la documentación no contiene información.
     if answer_indicates_no_information(answer):
         reduced_documents = documents[:3]
 
