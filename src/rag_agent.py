@@ -19,22 +19,21 @@ EMBEDDING_MODEL = (
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-# Modelo ligero utilizado en Oracle Cloud.
+# Modelo ligero para Oracle Cloud.
 OLLAMA_MODEL = "gemma3:1b"
 
-# Recuperación:
-# buscamos varios candidatos, pero solo enviamos los mejores.
-RETRIEVAL_CANDIDATES = 6
-MAX_RETRIEVED_DOCUMENTS = 3
-
-# Cantidad máxima enviada a Gemma por cada fragmento.
-MAX_CHARS_PER_DOCUMENT = 1100
-
+# Recuperación y contexto.
+RETRIEVAL_CANDIDATES = 10
+MAX_RETRIEVED_DOCUMENTS = 4
+MAX_CHARS_PER_DOCUMENT = 1400
 MAX_SOURCES_TO_DISPLAY = 3
+
+# Diagnóstico.
 SHOW_RETRIEVED_SOURCES_IN_TERMINAL = True
 SHOW_PERFORMANCE_TIMES = True
 
-# Caché en memoria para preguntas repetidas.
+# Caché simple en memoria para preguntas repetidas.
+ENABLE_ANSWER_CACHE = True
 MAX_CACHE_ENTRIES = 100
 ANSWER_CACHE = {}
 
@@ -47,47 +46,6 @@ NO_INFORMATION_MESSAGE = (
     "Por favor, ponte en contacto con el equipo de soporte "
     "por correo electrónico."
 )
-
-# Palabras demasiado comunes que no ayudan a seleccionar contexto.
-STOPWORDS = {
-    "a",
-    "al",
-    "algo",
-    "como",
-    "con",
-    "cual",
-    "cuando",
-    "de",
-    "del",
-    "desde",
-    "donde",
-    "el",
-    "ella",
-    "en",
-    "es",
-    "esa",
-    "ese",
-    "esta",
-    "este",
-    "hacer",
-    "hay",
-    "la",
-    "las",
-    "lo",
-    "los",
-    "me",
-    "mi",
-    "para",
-    "por",
-    "que",
-    "se",
-    "sin",
-    "su",
-    "sus",
-    "un",
-    "una",
-    "y",
-}
 
 
 # ============================================================
@@ -124,26 +82,6 @@ def normalize_text(text):
     )
 
     return normalized.strip()
-
-
-def extract_keywords(text):
-    """
-    Obtiene términos útiles para identificar las partes
-    del contexto más relacionadas con la pregunta.
-    """
-
-    normalized = normalize_text(text)
-
-    words = re.findall(
-        r"\b[a-z0-9_-]{3,}\b",
-        normalized,
-    )
-
-    return {
-        word
-        for word in words
-        if word not in STOPWORDS
-    }
 
 
 def answer_indicates_no_information(answer):
@@ -209,15 +147,15 @@ def load_language_model():
     """
     Inicializa Gemma 3 mediante Ollama.
 
-    keep_alive evita que el modelo se descargue de memoria
-    entre preguntas. num_thread aprovecha las cuatro OCPU.
+    keep_alive evita recargar el modelo entre preguntas.
+    num_thread aprovecha las cuatro OCPU de la VM.
     """
 
     return ChatOllama(
         model=OLLAMA_MODEL,
         temperature=0,
-        num_predict=180,
-        num_ctx=2048,
+        num_predict=220,
+        num_ctx=4096,
         num_thread=4,
         keep_alive="60m",
     )
@@ -229,14 +167,15 @@ def load_language_model():
 
 def expand_search_query(question):
     """
-    Agrega términos equivalentes solamente cuando son necesarios.
+    Agrega términos equivalentes a preguntas conocidas.
 
-    La pregunta original se conserva para que Gemma responda
-    exactamente a lo solicitado. La ampliación solo ayuda a FAISS.
+    La ampliación se usa solamente para buscar en FAISS.
+    La pregunta original sigue siendo la que recibe Gemma.
     """
 
     normalized = normalize_text(question)
 
+    # Creación de usuarios.
     user_creation_patterns = [
         r"\bcomo creo un usuario\b",
         r"\bcomo crear un usuario\b",
@@ -257,12 +196,13 @@ def expand_search_query(question):
         for pattern in user_creation_patterns
     ):
         return (
-            f"{question}. "
-            "Registrar nuevo usuario en Dashboard, "
-            "administración de usuarios, nuevo usuario, "
-            "datos, rol y guardar."
+            f"{question}\n\n"
+            "Registrar un nuevo usuario en el Dashboard. "
+            "Administración de usuarios. Nuevo usuario. "
+            "Capturar información. Seleccionar rol. Guardar."
         )
 
+    # Registro de prendas.
     garment_registration_patterns = [
         r"\bregistrar una nueva prenda\b",
         r"\bregistrar nuevas prendas\b",
@@ -276,11 +216,13 @@ def expand_search_query(question):
         for pattern in garment_registration_patterns
     ):
         return (
-            f"{question}. "
-            "Registrar prendas nuevas en aplicación Android, "
-            "tipo de prenda, lectura RFID y confirmar."
+            f"{question}\n\n"
+            "Registrar nuevas prendas en la aplicación Android. "
+            "Seleccionar tipo de prenda. Iniciar lectura RFID. "
+            "Validar etiquetas detectadas. Confirmar registro."
         )
 
+    # Localización de prendas.
     garment_location_patterns = [
         r"\blocalizar una prenda\b",
         r"\bbuscar una prenda\b",
@@ -293,11 +235,56 @@ def expand_search_query(question):
         for pattern in garment_location_patterns
     ):
         return (
-            f"{question}. "
-            "Localizar prendas, lectura RFID, validar etiquetas, "
-            "nombre y ubicación."
+            f"{question}\n\n"
+            "Localizar prendas mediante RFID. Iniciar lectura. "
+            "Validar etiquetas. Consultar nombre, ubicación y RFID."
         )
 
+    # Historial de activos.
+    asset_history_patterns = [
+        r"\bhistorial de un activo\b",
+        r"\bhistorial del activo\b",
+        r"\bver el historial\b",
+        r"\bver historial\b",
+        r"\bconsultar historial\b",
+        r"\bhistorico de un activo\b",
+        r"\bhistorico del activo\b",
+        r"\bmovimientos de un activo\b",
+        r"\bentradas y salidas de un activo\b",
+    ]
+
+    if any(
+        re.search(pattern, normalized)
+        for pattern in asset_history_patterns
+    ):
+        return (
+            f"{question}\n\n"
+            "Administrar activos. Localizar el activo. "
+            "Seleccionar el icono de edición o lápiz. "
+            "Abrir el detalle. Seleccionar la pestaña Histórico. "
+            "Consultar movimientos, entradas y salidas."
+        )
+
+    # Potencia del lector.
+    reader_power_patterns = [
+        r"\bcambiar la potencia\b",
+        r"\bajustar la potencia\b",
+        r"\bconfigurar la potencia\b",
+        r"\bpotencia de la lectora\b",
+        r"\bpotencia del lector\b",
+    ]
+
+    if any(
+        re.search(pattern, normalized)
+        for pattern in reader_power_patterns
+    ):
+        return (
+            f"{question}\n\n"
+            "Configurador de potencia del lector RFID. "
+            "Icono de lápiz. Barra deslizante. Aplicar potencia."
+        )
+
+    # Problemas de lectura RFID.
     rfid_detection_patterns = [
         r"\bno detecta etiquetas\b",
         r"\bno se detectan etiquetas\b",
@@ -311,35 +298,10 @@ def expand_search_query(question):
         for pattern in rfid_detection_patterns
     ):
         return (
-            f"{question}. "
-            "Lector RFID no detecta etiquetas, potencia, "
-            "distancia, alcance y estado de etiquetas."
-        )
-
-            # --------------------------------------------------------
-    # Historial de un activo
-    # --------------------------------------------------------
-
-    asset_history_patterns = [
-        r"\bhistorial de un activo\b",
-        r"\bhistorial del activo\b",
-        r"\bver historial\b",
-        r"\bconsultar historial\b",
-        r"\bhistorico de un activo\b",
-        r"\bmovimientos de un activo\b",
-        r"\bentradas y salidas de un activo\b",
-    ]
-
-    if any(
-        re.search(pattern, normalized)
-        for pattern in asset_history_patterns
-    ):
-        return (
-            f"{question}. "
-            "Administrar activos, localizar activo, "
-            "seleccionar icono de lápiz, abrir detalle, "
-            "seleccionar opción Histórico, visualizar "
-            "historial de entradas y salidas."
+            f"{question}\n\n"
+            "El lector RFID no detecta etiquetas. "
+            "Verificar lector, potencia, distancia, alcance, "
+            "orientación y estado de las etiquetas."
         )
 
     return question
@@ -350,7 +312,7 @@ def expand_search_query(question):
 # ============================================================
 
 def document_key(document):
-    """Genera una clave para eliminar fragmentos duplicados."""
+    """Genera una clave para evitar fragmentos duplicados."""
 
     file_name = document.metadata.get(
         "file_name",
@@ -361,7 +323,7 @@ def document_key(document):
 
     normalized_content = normalize_text(
         document.page_content
-    )[:400]
+    )[:500]
 
     return (
         file_name,
@@ -372,26 +334,31 @@ def document_key(document):
 
 def retrieve_documents(vector_store, question):
     """
-    Recupera candidatos mediante FAISS, elimina duplicados
-    y conserva únicamente los fragmentos más cercanos.
+    Recupera fragmentos usando la pregunta original y,
+    cuando aplica, una versión ampliada.
+
+    Combina los resultados, elimina duplicados y conserva
+    los fragmentos con menor distancia.
     """
 
     expanded_question = expand_search_query(question)
 
-    queries = [question]
+    search_queries = [question]
 
     if expanded_question != question:
-        queries.append(expanded_question)
+        search_queries.append(expanded_question)
 
     combined_results = {}
 
-    for query_index, search_query in enumerate(queries):
-        results = vector_store.similarity_search_with_score(
-            query=search_query,
-            k=RETRIEVAL_CANDIDATES,
+    for query_index, search_query in enumerate(search_queries):
+        results_with_scores = (
+            vector_store.similarity_search_with_score(
+                query=search_query,
+                k=RETRIEVAL_CANDIDATES,
+            )
         )
 
-        for document, score in results:
+        for document, score in results_with_scores:
             key = document_key(document)
             numeric_score = float(score)
 
@@ -432,173 +399,6 @@ def retrieve_documents(vector_store, question):
 
 
 # ============================================================
-# Selección de contenido relevante
-# ============================================================
-
-def split_text_units(text):
-    """
-    Divide un fragmento en párrafos, instrucciones,
-    títulos y oraciones.
-    """
-
-    clean_text = re.sub(
-        r"\r\n?",
-        "\n",
-        str(text),
-    )
-
-    raw_units = re.split(
-        r"\n+|(?<=[.!?])\s+",
-        clean_text,
-    )
-
-    return [
-        re.sub(r"\s+", " ", unit).strip()
-        for unit in raw_units
-        if unit and unit.strip()
-    ]
-
-
-def score_text_unit(unit, keywords):
-    """
-    Asigna relevancia a una oración o línea según
-    las palabras de la pregunta.
-    """
-
-    normalized_unit = normalize_text(unit)
-
-    unit_words = set(
-        re.findall(
-            r"\b[a-z0-9_-]{3,}\b",
-            normalized_unit,
-        )
-    )
-
-    common_words = keywords.intersection(unit_words)
-
-    score = len(common_words) * 3
-
-    # Las instrucciones y pasos suelen contener la respuesta.
-    if re.match(
-        r"^(\d+[\.\)]|paso\s+\d+|primero|despues|luego|finalmente)",
-        normalized_unit,
-    ):
-        score += 2
-
-    # Priorizamos líneas que parecen acciones de interfaz.
-    action_terms = {
-        "seleccione",
-        "seleccionar",
-        "presione",
-        "presionar",
-        "ingrese",
-        "ingresar",
-        "capture",
-        "capturar",
-        "guardar",
-        "confirme",
-        "confirmar",
-        "inicie",
-        "iniciar",
-        "detener",
-        "reiniciar",
-        "ajustar",
-        "potencia",
-        "usuario",
-        "ubicacion",
-        "prenda",
-        "lector",
-        "rfid",
-    }
-
-    score += len(action_terms.intersection(unit_words))
-
-    return score
-
-
-def select_relevant_excerpt(text, question):
-    """
-    Selecciona un bloque continuo alrededor de la información
-    más relacionada con la pregunta.
-
-    Se conserva el contexto anterior y posterior para evitar
-    devolver solamente títulos u objetivos sin instrucciones.
-    """
-
-    units = split_text_units(text)
-
-    if not units:
-        return str(text).strip()[
-            :MAX_CHARS_PER_DOCUMENT
-        ]
-
-    expanded_question = expand_search_query(question)
-    keywords = extract_keywords(expanded_question)
-
-    scored_units = [
-        (
-            index,
-            score_text_unit(unit, keywords),
-        )
-        for index, unit in enumerate(units)
-    ]
-
-    best_index, best_score = max(
-        scored_units,
-        key=lambda item: item[1],
-    )
-
-    # Si ninguna línea coincide claramente,
-    # conserva el inicio completo del fragmento.
-    if best_score <= 0:
-        return "\n".join(units)[
-            :MAX_CHARS_PER_DOCUMENT
-        ]
-
-    normalized_question = normalize_text(question)
-
-    asks_for_procedure = any(
-        expression in normalized_question
-        for expression in [
-            "como",
-            "pasos",
-            "procedimiento",
-            "donde",
-            "ver",
-            "consultar",
-            "crear",
-            "registrar",
-            "agregar",
-            "cambiar",
-            "historial",
-            "historico",
-        ]
-    )
-
-    if asks_for_procedure:
-        # Conserva líneas anteriores y varias posteriores.
-        start_index = max(0, best_index - 3)
-        end_index = min(
-            len(units),
-            best_index + 10,
-        )
-    else:
-        start_index = max(0, best_index - 2)
-        end_index = min(
-            len(units),
-            best_index + 6,
-        )
-
-    selected_units = units[
-        start_index:end_index
-    ]
-
-    excerpt = "\n".join(selected_units)
-
-    return excerpt[:MAX_CHARS_PER_DOCUMENT]
-
-
-# ============================================================
 # Construcción del contexto
 # ============================================================
 
@@ -613,10 +413,37 @@ def get_page_number(document):
     return None
 
 
-def build_context(documents, question):
+def clean_document_text(text):
+    """Limpia saltos excesivos sin alterar el contenido."""
+
+    clean_text = re.sub(
+        r"\r\n?",
+        "\n",
+        str(text),
+    ).strip()
+
+    clean_text = re.sub(
+        r"[ \t]+",
+        " ",
+        clean_text,
+    )
+
+    clean_text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        clean_text,
+    )
+
+    return clean_text
+
+
+def build_context(documents):
     """
-    Construye un contexto compacto con las partes más relacionadas
-    con la pregunta.
+    Construye un contexto compacto conservando el fragmento
+    original recuperado por FAISS.
+
+    No selecciona oraciones aisladas para evitar perder
+    procedimientos completos.
     """
 
     context_parts = []
@@ -638,14 +465,13 @@ def build_context(documents, question):
             else "no disponible"
         )
 
-        excerpt = select_relevant_excerpt(
-            text=document.page_content,
-            question=question,
-        )
+        content = clean_document_text(
+            document.page_content
+        )[:MAX_CHARS_PER_DOCUMENT]
 
         context_parts.append(
             f"[Fuente {index}: {file_name}, "
-            f"página {page_text}]\n{excerpt}"
+            f"página {page_text}]\n{content}"
         )
 
     return "\n\n".join(context_parts)
@@ -654,39 +480,56 @@ def build_context(documents, question):
 # ============================================================
 # Prompt
 # ============================================================
+
 def build_prompt(question, context):
     """
     Construye un prompt compacto que prioriza respuestas
-    completas y operativas.
+    completas, precisas y operativas.
     """
 
     return f"""
 Eres el asistente especializado en IDLinens HA.
 
-Responde usando exclusivamente el contexto recuperado de los manuales.
+Debes responder EXCLUSIVAMENTE con la información incluida
+en el contexto recuperado de los manuales.
 
-REGLAS:
+REGLAS OBLIGATORIAS:
 
 1. Responde siempre en español.
 2. Responde exactamente lo que preguntó el usuario.
 3. Reconoce sinónimos y expresiones equivalentes.
-4. Si la pregunta contiene "cómo", "pasos", "ver", "consultar",
-   "crear", "registrar" o "cambiar", proporciona las acciones
-   concretas en una lista numerada.
-5. No respondas únicamente con el objetivo o la descripción
-   del módulo cuando el contexto contenga instrucciones de uso.
-6. Conserva los nombres reales de botones, módulos, pestañas
-   y opciones mostrados en el contexto.
-7. No inventes botones, campos, funciones ni resultados.
-8. No utilices información externa.
-9. No agregues fuentes; el sistema las añadirá automáticamente.
-10. Si el contexto no contiene la respuesta, escribe exactamente:
+4. Lee todos los fragmentos antes de responder.
+5. Si la pregunta solicita cómo hacer algo, ver, consultar,
+   crear, registrar, cambiar, configurar, editar o eliminar,
+   proporciona las acciones concretas en una lista numerada.
+6. Si el contexto contiene una descripción, un objetivo y un
+   procedimiento, utiliza el procedimiento para responder.
+7. No respondas únicamente con el objetivo, introducción o
+   descripción cuando existan instrucciones de uso.
+8. Ignora textos sobre permisos, errores, soporte técnico,
+   advertencias o recomendaciones, salvo que el usuario pregunte
+   específicamente por ellos.
+9. Conserva los nombres reales de botones, módulos, pestañas,
+   menús y opciones que aparezcan en el contexto.
+10. No confundas:
+    - iniciar sesión con crear un usuario;
+    - registrar una prenda con ponerla en circulación;
+    - localizar una prenda con editar un activo;
+    - consultar historial con solucionar un problema.
+11. No inventes botones, campos, funciones, requisitos,
+    resultados ni pasos.
+12. No utilices conocimientos externos.
+13. No agregues fuentes; el sistema las mostrará automáticamente.
+14. Si el contexto no contiene la respuesta, escribe exactamente:
+
 "{NO_INFORMATION_BASE}"
 
 CONTEXTO:
+
 {context}
 
 PREGUNTA:
+
 {question}
 
 RESPUESTA:
@@ -815,13 +658,19 @@ def show_retrieved_sources(documents):
 def get_cached_answer(question):
     """Obtiene una respuesta guardada para una pregunta repetida."""
 
-    cache_key = normalize_text(question)
+    if not ENABLE_ANSWER_CACHE:
+        return None
 
-    return ANSWER_CACHE.get(cache_key)
+    return ANSWER_CACHE.get(
+        normalize_text(question)
+    )
 
 
 def save_cached_answer(question, answer):
     """Guarda una respuesta y limita el tamaño de la caché."""
+
+    if not ENABLE_ANSWER_CACHE:
+        return
 
     cache_key = normalize_text(question)
 
@@ -844,7 +693,7 @@ def answer_question(
     """
     Ejecuta el flujo:
 
-    pregunta → FAISS → contexto relevante → Gemma → fuentes.
+    pregunta → FAISS → contexto → Gemma → fuentes.
     """
 
     total_start = time.perf_counter()
@@ -854,13 +703,14 @@ def answer_question(
     if not clean_question:
         return "Debes escribir una pregunta."
 
-    cached_answer = get_cached_answer(clean_question)
+    cached_answer = get_cached_answer(
+        clean_question
+    )
 
     if cached_answer is not None:
         if SHOW_PERFORMANCE_TIMES:
             print(
-                "\nRespuesta recuperada desde caché: "
-                "0 llamadas al modelo."
+                "\nRespuesta recuperada desde caché."
             )
 
         return cached_answer
@@ -883,10 +733,7 @@ def answer_question(
 
     context_start = time.perf_counter()
 
-    context = build_context(
-        documents=documents,
-        question=clean_question,
-    )
+    context = build_context(documents)
 
     context_seconds = (
         time.perf_counter() - context_start
@@ -911,8 +758,10 @@ def answer_question(
     if answer_indicates_no_information(answer):
         final_answer = NO_INFORMATION_MESSAGE
     else:
-        sources = format_sources(documents)
-        final_answer = answer.strip() + sources
+        final_answer = (
+            answer.strip()
+            + format_sources(documents)
+        )
 
     save_cached_answer(
         question=clean_question,
@@ -942,7 +791,7 @@ def answer_question(
             f"{total_seconds:.2f} s"
         )
         print(
-            f"- Caracteres enviados como contexto: "
+            f"- Caracteres del contexto: "
             f"{len(context)}"
         )
 
@@ -985,7 +834,8 @@ def main():
 
             if not question:
                 print(
-                    "\nDebes escribir una pregunta.\n"
+                    "\nDebes escribir "
+                    "una pregunta.\n"
                 )
                 continue
 
