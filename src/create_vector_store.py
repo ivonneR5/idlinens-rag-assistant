@@ -1,73 +1,40 @@
 from pathlib import Path
+import shutil
 
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from chunk_documents import load_documents, split_documents
+
+
+# ============================================================
+# Configuración
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DOCS_PATH = BASE_DIR / "docs"
 VECTOR_STORE_PATH = BASE_DIR / "vector_store"
+TEMP_VECTOR_STORE_PATH = BASE_DIR / "vector_store_temp"
 
 EMBEDDING_MODEL = (
-    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    "sentence-transformers/"
+    "paraphrase-multilingual-MiniLM-L12-v2"
 )
 
 
-def load_documents():
-    """Carga todos los PDF y conserva el nombre del archivo en los metadatos."""
-
-    pdf_files = sorted(DOCS_PATH.glob("*.pdf"))
-
-    if not pdf_files:
-        raise FileNotFoundError(
-            f"No se encontraron archivos PDF en: {DOCS_PATH}"
-        )
-
-    documents = []
-
-    print("\nCargando documentos...\n")
-
-    for pdf_file in pdf_files:
-        loader = PyPDFLoader(str(pdf_file))
-        pages = loader.load()
-
-        for page in pages:
-            page.metadata["file_name"] = pdf_file.name
-
-        documents.extend(pages)
-
-        print(f"Documento: {pdf_file.name}")
-        print(f"Páginas cargadas: {len(pages)}")
-        print("-" * 60)
-
-    return documents
-
-
-def split_documents(documents):
-    """Divide el contenido en fragmentos pequeños con superposición."""
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=150,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-
-    chunks = splitter.split_documents(documents)
-
-    print(f"\nFragmentos generados: {len(chunks)}")
-
-    return chunks
-
+# ============================================================
+# Embeddings
+# ============================================================
 
 def create_embeddings():
-    """Inicializa el modelo local de embeddings."""
+    """
+    Inicializa el mismo modelo de embeddings utilizado
+    posteriormente por el agente RAG.
+    """
 
     print("\nCargando modelo de embeddings...")
     print(f"Modelo: {EMBEDDING_MODEL}")
 
-    embeddings = HuggingFaceEmbeddings(
+    return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={
             "device": "cpu",
@@ -77,13 +44,24 @@ def create_embeddings():
         },
     )
 
-    return embeddings
 
+# ============================================================
+# Construcción del índice
+# ============================================================
 
 def build_vector_store(chunks, embeddings):
-    """Crea el índice FAISS con los fragmentos procesados."""
+    """
+    Genera el índice FAISS utilizando exactamente los fragmentos
+    producidos por chunk_documents.py.
+    """
 
-    print("\nGenerando embeddings y creando el índice FAISS...")
+    if not chunks:
+        raise ValueError(
+            "No existen fragmentos para crear la base vectorial."
+        )
+
+    print("\nGenerando embeddings...")
+    print(f"Fragmentos que serán indexados: {len(chunks)}")
 
     vector_store = FAISS.from_documents(
         documents=chunks,
@@ -93,16 +71,118 @@ def build_vector_store(chunks, embeddings):
     return vector_store
 
 
+# ============================================================
+# Guardado seguro
+# ============================================================
+
 def save_vector_store(vector_store):
-    """Guarda el índice FAISS dentro del proyecto."""
+    """
+    Guarda primero el índice en una carpeta temporal.
 
-    VECTOR_STORE_PATH.mkdir(parents=True, exist_ok=True)
+    Solo después de guardarlo correctamente reemplaza el índice
+    anterior, evitando perder la base funcional si ocurre un error.
+    """
 
-    vector_store.save_local(str(VECTOR_STORE_PATH))
+    if TEMP_VECTOR_STORE_PATH.exists():
+        shutil.rmtree(TEMP_VECTOR_STORE_PATH)
+
+    TEMP_VECTOR_STORE_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    print("\nGuardando índice temporal...")
+
+    vector_store.save_local(
+        str(TEMP_VECTOR_STORE_PATH)
+    )
+
+    required_files = [
+        TEMP_VECTOR_STORE_PATH / "index.faiss",
+        TEMP_VECTOR_STORE_PATH / "index.pkl",
+    ]
+
+    missing_files = [
+        path.name
+        for path in required_files
+        if not path.exists()
+    ]
+
+    if missing_files:
+        raise RuntimeError(
+            "El índice no se guardó correctamente. "
+            f"Archivos faltantes: {missing_files}"
+        )
+
+    if VECTOR_STORE_PATH.exists():
+        shutil.rmtree(VECTOR_STORE_PATH)
+
+    TEMP_VECTOR_STORE_PATH.rename(
+        VECTOR_STORE_PATH
+    )
 
     print("\nÍndice vectorial guardado correctamente.")
     print(f"Ubicación: {VECTOR_STORE_PATH}")
 
+
+# ============================================================
+# Validación
+# ============================================================
+
+def validate_chunks(chunks):
+    """
+    Comprueba que los fragmentos tengan contenido y metadatos
+    básicos antes de construir el índice.
+    """
+
+    valid_chunks = []
+
+    empty_chunks = 0
+    missing_file_name = 0
+    missing_page = 0
+
+    for chunk in chunks:
+        content = str(
+            chunk.page_content or ""
+        ).strip()
+
+        if not content:
+            empty_chunks += 1
+            continue
+
+        if not chunk.metadata.get("file_name"):
+            missing_file_name += 1
+
+        if chunk.metadata.get("page") is None:
+            missing_page += 1
+
+        valid_chunks.append(chunk)
+
+    print("\nValidación de fragmentos")
+    print("-" * 60)
+    print(f"Fragmentos recibidos: {len(chunks)}")
+    print(f"Fragmentos válidos: {len(valid_chunks)}")
+    print(f"Fragmentos vacíos descartados: {empty_chunks}")
+    print(
+        "Fragmentos sin nombre de archivo: "
+        f"{missing_file_name}"
+    )
+    print(
+        "Fragmentos sin número de página: "
+        f"{missing_page}"
+    )
+
+    if not valid_chunks:
+        raise ValueError(
+            "No quedaron fragmentos válidos para indexar."
+        )
+
+    return valid_chunks
+
+
+# ============================================================
+# Ejecución principal
+# ============================================================
 
 def main():
     try:
@@ -110,10 +190,23 @@ def main():
         print("CREACIÓN DE LA BASE VECTORIAL")
         print("=" * 70)
 
+        print(
+            "\nCargando los manuales y utilizando "
+            "la fragmentación oficial..."
+        )
+
         documents = load_documents()
         chunks = split_documents(documents)
+
+        chunks = validate_chunks(chunks)
+
         embeddings = create_embeddings()
-        vector_store = build_vector_store(chunks, embeddings)
+
+        vector_store = build_vector_store(
+            chunks=chunks,
+            embeddings=embeddings,
+        )
+
         save_vector_store(vector_store)
 
         print("\n" + "=" * 70)
@@ -125,11 +218,31 @@ def main():
         print("=" * 70)
 
     except FileNotFoundError as error:
-        print(f"\nError: {error}")
+        print(f"\nError de archivos: {error}")
+        raise
+
+    except ImportError as error:
+        print(
+            "\nNo fue posible importar las funciones "
+            "de chunk_documents.py."
+        )
+        print(f"Detalle: {error}")
+        raise
 
     except Exception as error:
-        print("\nOcurrió un error durante la indexación.")
+        print(
+            "\nOcurrió un error durante la creación "
+            "de la base vectorial."
+        )
         print(f"Detalle: {error}")
+        raise
+
+    finally:
+        if TEMP_VECTOR_STORE_PATH.exists():
+            shutil.rmtree(
+                TEMP_VECTOR_STORE_PATH,
+                ignore_errors=True,
+            )
 
 
 if __name__ == "__main__":
