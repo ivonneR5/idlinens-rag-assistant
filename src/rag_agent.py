@@ -28,7 +28,7 @@ RETRIEVAL_CANDIDATES = 6
 MAX_RETRIEVED_DOCUMENTS = 3
 
 # Cantidad máxima enviada a Gemma por cada fragmento.
-MAX_CHARS_PER_DOCUMENT = 750
+MAX_CHARS_PER_DOCUMENT = 1100
 
 MAX_SOURCES_TO_DISPLAY = 3
 SHOW_RETRIEVED_SOURCES_IN_TERMINAL = True
@@ -316,6 +316,32 @@ def expand_search_query(question):
             "distancia, alcance y estado de etiquetas."
         )
 
+            # --------------------------------------------------------
+    # Historial de un activo
+    # --------------------------------------------------------
+
+    asset_history_patterns = [
+        r"\bhistorial de un activo\b",
+        r"\bhistorial del activo\b",
+        r"\bver historial\b",
+        r"\bconsultar historial\b",
+        r"\bhistorico de un activo\b",
+        r"\bmovimientos de un activo\b",
+        r"\bentradas y salidas de un activo\b",
+    ]
+
+    if any(
+        re.search(pattern, normalized)
+        for pattern in asset_history_patterns
+    ):
+        return (
+            f"{question}. "
+            "Administrar activos, localizar activo, "
+            "seleccionar icono de lápiz, abrir detalle, "
+            "seleccionar opción Histórico, visualizar "
+            "historial de entradas y salidas."
+        )
+
     return question
 
 
@@ -492,8 +518,11 @@ def score_text_unit(unit, keywords):
 
 def select_relevant_excerpt(text, question):
     """
-    Extrae del fragmento únicamente las líneas más relacionadas
-    con la pregunta, conservando su orden original.
+    Selecciona un bloque continuo alrededor de la información
+    más relacionada con la pregunta.
+
+    Se conserva el contexto anterior y posterior para evitar
+    devolver solamente títulos u objetivos sin instrucciones.
     """
 
     units = split_text_units(text)
@@ -503,54 +532,68 @@ def select_relevant_excerpt(text, question):
             :MAX_CHARS_PER_DOCUMENT
         ]
 
-    search_text = expand_search_query(question)
-    keywords = extract_keywords(search_text)
+    expanded_question = expand_search_query(question)
+    keywords = extract_keywords(expanded_question)
 
     scored_units = [
         (
             index,
-            unit,
             score_text_unit(unit, keywords),
         )
         for index, unit in enumerate(units)
     ]
 
-    relevant_units = [
-        item
-        for item in scored_units
-        if item[2] > 0
-    ]
+    best_index, best_score = max(
+        scored_units,
+        key=lambda item: item[1],
+    )
 
-    if not relevant_units:
-        return " ".join(units)[
+    # Si ninguna línea coincide claramente,
+    # conserva el inicio completo del fragmento.
+    if best_score <= 0:
+        return "\n".join(units)[
             :MAX_CHARS_PER_DOCUMENT
         ]
 
-    # Tomamos las mejores líneas y algunas líneas contiguas
-    # para no perder instrucciones relacionadas.
-    best_units = sorted(
-        relevant_units,
-        key=lambda item: item[2],
-        reverse=True,
-    )[:5]
+    normalized_question = normalize_text(question)
 
-    selected_indexes = set()
+    asks_for_procedure = any(
+        expression in normalized_question
+        for expression in [
+            "como",
+            "pasos",
+            "procedimiento",
+            "donde",
+            "ver",
+            "consultar",
+            "crear",
+            "registrar",
+            "agregar",
+            "cambiar",
+            "historial",
+            "historico",
+        ]
+    )
 
-    for index, _unit, _score in best_units:
-        selected_indexes.add(index)
+    if asks_for_procedure:
+        # Conserva líneas anteriores y varias posteriores.
+        start_index = max(0, best_index - 3)
+        end_index = min(
+            len(units),
+            best_index + 10,
+        )
+    else:
+        start_index = max(0, best_index - 2)
+        end_index = min(
+            len(units),
+            best_index + 6,
+        )
 
-        if index > 0:
-            selected_indexes.add(index - 1)
-
-        if index + 1 < len(units):
-            selected_indexes.add(index + 1)
-
-    ordered_units = [
-        units[index]
-        for index in sorted(selected_indexes)
+    selected_units = units[
+        start_index:end_index
     ]
 
-    excerpt = "\n".join(ordered_units)
+    excerpt = "\n".join(selected_units)
 
     return excerpt[:MAX_CHARS_PER_DOCUMENT]
 
@@ -611,28 +654,34 @@ def build_context(documents, question):
 # ============================================================
 # Prompt
 # ============================================================
-
 def build_prompt(question, context):
     """
-    Construye un prompt compacto para reducir el tiempo
-    de procesamiento del modelo.
+    Construye un prompt compacto que prioriza respuestas
+    completas y operativas.
     """
 
     return f"""
-Eres el asistente de IDLinens HA.
+Eres el asistente especializado en IDLinens HA.
 
-Usa solamente el contexto de los manuales.
-Responde en español y no inventes información.
+Responde usando exclusivamente el contexto recuperado de los manuales.
 
-Reglas:
-- Reconoce sinónimos y expresiones equivalentes.
-- Responde únicamente lo que se preguntó.
-- Si es un procedimiento, presenta pasos numerados.
-- No confundas crear usuarios, iniciar sesión, registrar prendas,
-  poner prendas en circulación, localizar prendas o editar activos.
-- No incluyas fuentes; el sistema las agrega.
-- Si el contexto no contiene la respuesta, escribe exactamente:
-  "{NO_INFORMATION_BASE}"
+REGLAS:
+
+1. Responde siempre en español.
+2. Responde exactamente lo que preguntó el usuario.
+3. Reconoce sinónimos y expresiones equivalentes.
+4. Si la pregunta contiene "cómo", "pasos", "ver", "consultar",
+   "crear", "registrar" o "cambiar", proporciona las acciones
+   concretas en una lista numerada.
+5. No respondas únicamente con el objetivo o la descripción
+   del módulo cuando el contexto contenga instrucciones de uso.
+6. Conserva los nombres reales de botones, módulos, pestañas
+   y opciones mostrados en el contexto.
+7. No inventes botones, campos, funciones ni resultados.
+8. No utilices información externa.
+9. No agregues fuentes; el sistema las añadirá automáticamente.
+10. Si el contexto no contiene la respuesta, escribe exactamente:
+"{NO_INFORMATION_BASE}"
 
 CONTEXTO:
 {context}
