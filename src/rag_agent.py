@@ -83,6 +83,46 @@ def normalize_text(text):
 
     return normalized.strip()
 
+def get_verified_direct_answer(question):
+    """
+    Respuestas verificadas para consultas operativas que pueden
+    ser interpretadas incorrectamente por el modelo pequeño.
+    """
+
+    normalized = normalize_text(question)
+
+    asset_history_patterns = [
+        r"\bhistorial de un activo\b",
+        r"\bhistorial del activo\b",
+        r"\bver el historial\b",
+        r"\bver historial\b",
+        r"\bconsultar historial\b",
+        r"\bhistorico de un activo\b",
+        r"\bhistorico del activo\b",
+        r"\bmovimientos de un activo\b",
+        r"\bentradas y salidas de un activo\b",
+    ]
+
+    if any(
+        re.search(pattern, normalized)
+        for pattern in asset_history_patterns
+    ):
+        return """
+Para consultar el historial de un activo:
+
+1. Ingrese al módulo **Administrar activos** del Dashboard.
+2. Localice el activo que desea consultar.
+3. Seleccione el **ícono de lápiz o edición** correspondiente al activo.
+4. Dentro del detalle del activo, abra la pestaña **Histórico**.
+5. Revise los movimientos registrados, como entradas, salidas y cambios de ubicación.
+
+### Fuentes consultadas
+- Manual_Usuario_Dashboard.pdf, página 15
+- Manual_Usuario_Dashboard.pdf, página 9
+""".strip()
+
+    return None
+
 
 def answer_indicates_no_information(answer):
     """
@@ -702,6 +742,13 @@ def answer_question(
 
     if not clean_question:
         return "Debes escribir una pregunta."
+
+        verified_answer = get_verified_direct_answer(
+        clean_question
+    )
+
+    if verified_answer is not None:
+        return verified_answer
 
     cached_answer = get_cached_answer(
         clean_question
