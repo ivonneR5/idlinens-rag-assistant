@@ -743,7 +743,7 @@ def answer_question(
     if not clean_question:
         return "Debes escribir una pregunta."
 
-        verified_answer = get_verified_direct_answer(
+    verified_answer = get_verified_direct_answer(
         clean_question
     )
 
